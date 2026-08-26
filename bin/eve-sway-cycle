@@ -1,0 +1,402 @@
+#!/usr/bin/python3
+"""Cycle EVE clients within or between configured groups."""
+
+from __future__ import annotations
+
+import json
+import fcntl
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+
+CONFIG = Path(
+    os.environ.get(
+        "EVE_SWAY_TOOLS_CONFIG",
+        Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+        / "eve-sway-tools/config.yaml",
+    )
+)
+CACHE = (
+    Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
+    / "eve-sway-tools-last-client.json"
+)
+OPERATIONS = {
+    "client-next": (False, 1),
+    "client-previous": (False, -1),
+    "group-next": (True, 1),
+    "group-previous": (True, -1),
+}
+ALLOWED_BINDINGS = {
+    "group_next",
+    "group_previous",
+    "client_next",
+    "client_previous",
+}
+
+
+def read_config() -> tuple[dict, list[str]]:
+    config = {
+        "workspace": None,
+        "bindings": {},
+        "fps": {},
+        "cycle_groups": {},
+    }
+    errors: list[str] = []
+    groups: dict[str, list[str]] = {}
+    section: str | None = None
+    current: str | None = None
+
+    try:
+        lines = CONFIG.read_text(encoding="utf-8").splitlines()
+    except OSError as error:
+        return config, [f"cannot read {CONFIG}: {error}"]
+
+    for line_number, raw in enumerate(lines, 1):
+        content = raw.split("#", 1)[0].rstrip()
+        if not content.strip():
+            continue
+
+        indent = len(content) - len(content.lstrip(" "))
+        stripped = content.strip()
+        if indent == 0:
+            if ":" not in stripped:
+                errors.append(f"line {line_number}: expected a top-level key")
+                section = None
+                continue
+            key, value = (part.strip() for part in stripped.split(":", 1))
+            if key == "workspace":
+                if config["workspace"] is not None:
+                    errors.append(f"line {line_number}: duplicate workspace")
+                config["workspace"] = value.strip("\"'")
+                section = None
+            elif key in {"bindings", "fps", "cycle_groups"} and not value:
+                section = key
+            else:
+                errors.append(f"line {line_number}: unknown key or invalid value: {key}")
+                section = None
+            current = None
+            continue
+
+        if section in {"bindings", "fps"} and indent == 2 and ":" in stripped:
+            key, value = (part.strip() for part in stripped.split(":", 1))
+            target = config[section]
+            if key in target:
+                errors.append(f"line {line_number}: duplicate {section}.{key}")
+            target[key] = value.strip("\"'")
+            continue
+
+        if section == "cycle_groups" and indent == 2 and stripped.endswith(":"):
+            current = stripped[:-1].strip()
+            if not current:
+                errors.append(f"line {line_number}: empty group name")
+            elif current in groups:
+                errors.append(f"line {line_number}: duplicate group: {current}")
+            else:
+                groups[current] = []
+            continue
+
+        if section == "cycle_groups" and indent == 4 and stripped.startswith("- "):
+            character = stripped[2:].strip().strip("\"'")
+            if current is None:
+                errors.append(f"line {line_number}: client has no group")
+            if character:
+                if current is not None:
+                    groups[current].append(character)
+            else:
+                errors.append(f"line {line_number}: empty client name")
+            continue
+
+        errors.append(f"line {line_number}: invalid indentation or structure")
+
+    config["cycle_groups"] = groups
+
+    workspace = config["workspace"]
+    if not workspace:
+        errors.append("workspace is required")
+    elif not re.fullmatch(r"[A-Za-z0-9_.:-]+", workspace):
+        errors.append("workspace contains unsupported characters")
+
+    binding_keys = set(config["bindings"])
+    unknown_bindings = binding_keys - ALLOWED_BINDINGS
+    if unknown_bindings:
+        errors.append(f"unknown bindings: {', '.join(sorted(unknown_bindings))}")
+    binding_values = list(config["bindings"].values())
+    for key, value in config["bindings"].items():
+        if not value or not re.fullmatch(r"[A-Za-z0-9_+.-]+", value):
+            errors.append(f"invalid binding {key}: {value!r}")
+    if len(binding_values) != len(set(binding_values)):
+        errors.append("bindings must be unique")
+
+    for key in ("active", "inactive"):
+        value = config["fps"].get(key)
+        if value is None:
+            errors.append(f"fps.{key} is required")
+        elif not value.isdigit():
+            errors.append(f"fps.{key} must be a non-negative integer")
+        else:
+            config["fps"][key] = int(value)
+    unknown_fps = set(config["fps"]) - {"active", "inactive"}
+    if unknown_fps:
+        errors.append(f"unknown fps keys: {', '.join(sorted(unknown_fps))}")
+    if isinstance(config["fps"].get("inactive"), int) and config["fps"]["inactive"] <= 0:
+        errors.append("fps.inactive must be greater than zero")
+
+    if not groups:
+        errors.append("at least one cycle group is required")
+    for name, members in groups.items():
+        if not members:
+            errors.append(f"group {name!r} is empty")
+    return config, errors
+
+
+def walk(node: dict):
+    yield node
+    for child in node.get("nodes", []):
+        yield from walk(child)
+    for child in node.get("floating_nodes", []):
+        yield from walk(child)
+
+
+def load_cache() -> dict[str, str]:
+    try:
+        value = json.loads(CACHE.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_cache(cache: dict[str, str]) -> None:
+    temporary = CACHE.with_suffix(f".{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(CACHE)
+
+
+def main() -> int:
+    if len(sys.argv) != 2 or (
+        sys.argv[1] not in OPERATIONS
+        and sys.argv[1] not in {"arrange", "validate"}
+    ):
+        print(
+            "usage: eve-sway-cycle "
+            "{client-next|client-previous|group-next|group-previous|arrange|validate}",
+            file=sys.stderr,
+        )
+        return 2
+
+    config, errors = read_config()
+    if errors:
+        for error in errors:
+            print(f"error: {error}", file=sys.stderr)
+        return 2
+    groups = config["cycle_groups"]
+    if sys.argv[1] == "validate":
+        client_count = sum(len(members) for members in groups.values())
+        print(
+            f"OK: workspace={config['workspace']}, "
+            f"groups={len(groups)}, clients={client_count}, "
+            f"fps={config['fps']['active']}/{config['fps']['inactive']}"
+        )
+        return 0
+
+    tree = json.loads(
+        subprocess.check_output(
+            ["/usr/bin/swaymsg", "-t", "get_tree", "-r"], text=True
+        )
+    )
+    clients: dict[str, dict] = {}
+    focused_character: str | None = None
+    for node in walk(tree):
+        title = node.get("name") or ""
+        if node.get("app_id") != "exefile.exe" or not title.startswith("EVE - "):
+            continue
+        character = title.removeprefix("EVE - ")
+        clients[character] = node
+        if node.get("focused"):
+            focused_character = character
+
+    if not clients:
+        return 1
+
+    if sys.argv[1] == "arrange":
+        lock_path = (
+            Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
+            / "eve-sway-tools-arrange.lock"
+        )
+        with lock_path.open("w", encoding="utf-8") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            original_focus = next(
+                (node.get("id") for node in walk(tree) if node.get("focused")),
+                None,
+            )
+            configured_ids = []
+            for members in groups.values():
+                for character in members:
+                    if character in clients:
+                        con_id = clients[character]["id"]
+                        if con_id not in configured_ids:
+                            configured_ids.append(con_id)
+
+            # Reorder only direct siblings in one tabbed parent. Swapping keeps
+            # every client in that parent; repeated `move left` can escape the
+            # tab container and corrupt the workspace hierarchy.
+            parent = next(
+                (
+                    node
+                    for node in walk(tree)
+                    if set(configured_ids).issubset(
+                        {child.get("id") for child in node.get("nodes", [])}
+                    )
+                ),
+                None,
+            )
+            if parent is None:
+                return 1
+
+            current_ids = [
+                child.get("id")
+                for child in parent.get("nodes", [])
+                if child.get("app_id") == "exefile.exe"
+            ]
+            if current_ids:
+                subprocess.run(
+                    [
+                        "/usr/bin/swaymsg",
+                        f"[con_id={current_ids[0]}]",
+                        "layout",
+                        "tabbed",
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    check=False,
+                )
+            desired_ids = configured_ids + [
+                con_id for con_id in current_ids if con_id not in configured_ids
+            ]
+            for index, desired_id in enumerate(desired_ids):
+                if index >= len(current_ids) or current_ids[index] == desired_id:
+                    continue
+                desired_index = current_ids.index(desired_id)
+                occupant_id = current_ids[index]
+                result = subprocess.run(
+                    [
+                        "/usr/bin/swaymsg",
+                        f"[con_id={desired_id}]",
+                        "swap",
+                        "container",
+                        "with",
+                        "con_id",
+                        str(occupant_id),
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    check=False,
+                )
+                if result.returncode != 0:
+                    return result.returncode
+                current_ids[index], current_ids[desired_index] = (
+                    current_ids[desired_index],
+                    current_ids[index],
+                )
+            if current_ids:
+                subprocess.run(
+                    [
+                        "/usr/bin/swaymsg",
+                        f"[con_id={current_ids[0]}]",
+                        "layout",
+                        "tabbed",
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    check=False,
+                )
+            if original_focus:
+                subprocess.run(
+                    ["/usr/bin/swaymsg", f"[con_id={original_focus}]", "focus"],
+                    stdout=subprocess.DEVNULL,
+                    check=False,
+                )
+        return 0
+
+    group_names = list(groups)
+    current_group: str | None = None
+    cache = load_cache()
+    if focused_character:
+        remembered_group = cache.get("__current_group")
+        if (
+            remembered_group in groups
+            and focused_character in groups[remembered_group]
+        ):
+            current_group = remembered_group
+        else:
+            current_group = next(
+                (
+                    name
+                    for name, members in groups.items()
+                    if focused_character in members
+                ),
+                None,
+            )
+
+    if current_group and focused_character:
+        cache[current_group] = focused_character
+
+    switch_group, step = OPERATIONS[sys.argv[1]]
+    target_group: str | None = None
+    target_character: str | None = None
+
+    if not switch_group:
+        if current_group is None:
+            current_group = group_names[0]
+        running = [name for name in groups[current_group] if name in clients]
+        if not running:
+            return 1
+        if focused_character in running:
+            index = running.index(focused_character)
+            target_character = running[(index + step) % len(running)]
+        else:
+            target_character = running[0 if step > 0 else -1]
+        target_group = current_group
+    else:
+        if current_group in group_names:
+            start = group_names.index(current_group)
+        else:
+            start = -1 if step > 0 else 0
+
+        for distance in range(1, len(group_names) + 1):
+            candidate_group = group_names[
+                (start + step * distance) % len(group_names)
+            ]
+            running = [
+                name for name in groups[candidate_group] if name in clients
+            ]
+            if not running:
+                continue
+            remembered = cache.get(candidate_group)
+            target_character = (
+                remembered if remembered in running else running[0 if step > 0 else -1]
+            )
+            target_group = candidate_group
+            break
+
+    if target_group is None or target_character is None:
+        return 1
+
+    con_id = clients[target_character].get("id")
+    if not con_id:
+        return 1
+    result = subprocess.run(
+        ["/usr/bin/swaymsg", f"[con_id={con_id}]", "focus"],
+        stdout=subprocess.DEVNULL,
+        check=False,
+    )
+    if result.returncode != 0:
+        return result.returncode
+
+    cache[target_group] = target_character
+    cache["__current_group"] = target_group
+    save_cache(cache)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

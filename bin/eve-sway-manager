@@ -1,0 +1,294 @@
+#!/bin/sh
+set -eu
+
+lock_file="${XDG_RUNTIME_DIR:-/tmp}/eve-sway-tools-manager.lock"
+pid_file="${XDG_RUNTIME_DIR:-/tmp}/eve-sway-tools-manager.pid"
+event_fifo="${XDG_RUNTIME_DIR:-/tmp}/eve-sway-tools-manager.$$.fifo"
+subscriber_pid=""
+exec 9>"${lock_file}"
+if ! /usr/bin/flock -n 9; then
+    old_pid=$(/usr/bin/cat "${pid_file}" 2>/dev/null || true)
+    case "${old_pid}" in
+        *[!0-9]*|"") exit 0 ;;
+        *) kill "${old_pid}" 2>/dev/null || true ;;
+    esac
+    /usr/bin/flock -w 3 9 || exit 0
+fi
+printf '%s\n' "$$" >"${pid_file}"
+
+config="${EVE_SWAY_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/eve-sway-tools/config.yaml}"
+[ -r "${config}" ] || exit 1
+"${HOME}/.local/bin/eve-sway-cycle" validate >/dev/null || exit 1
+
+eve_workspace=$(
+    /usr/bin/awk '
+        /^workspace:[[:space:]]*/ {
+            sub(/^workspace:[[:space:]]*/, "")
+            sub(/[[:space:]]+#.*$/, "")
+            gsub(/^["'\'']|["'\'']$/, "")
+            print
+            exit
+        }
+    ' "${config}"
+)
+[ -n "${eve_workspace}" ] || exit 1
+case "${eve_workspace}" in
+    *[!A-Za-z0-9_.:-]*) exit 1 ;;
+esac
+
+read_binding() {
+    key="${1}"
+    /usr/bin/awk -v wanted="${key}" '
+        /^bindings:[[:space:]]*$/ { in_bindings = 1; next }
+        in_bindings && /^[[:space:]]+[A-Za-z_]+:[[:space:]]*/ {
+            line = $0
+            sub(/^[[:space:]]+/, "", line)
+            name = line
+            sub(/:.*/, "", name)
+            if (name == wanted) {
+                sub(/^[^:]+:[[:space:]]*/, "", line)
+                sub(/[[:space:]]+#.*$/, "", line)
+                gsub(/^["'\'']|["'\'']$/, "", line)
+                print line
+                exit
+            }
+            next
+        }
+        in_bindings && /^[^[:space:]#]/ { exit }
+    ' "${config}"
+}
+
+group_next_binding=$(read_binding group_next)
+group_previous_binding=$(read_binding group_previous)
+client_next_binding=$(read_binding client_next)
+client_previous_binding=$(read_binding client_previous)
+
+bindings="
+${group_next_binding}
+${group_previous_binding}
+${client_next_binding}
+${client_previous_binding}
+"
+duplicates=$(
+    printf '%s\n' "${bindings}" |
+        /usr/bin/awk 'NF { count[$0]++ } END { for (key in count) if (count[key] > 1) print key }'
+)
+[ -z "${duplicates}" ] || exit 1
+
+read_fps() {
+    key="${1}"
+    /usr/bin/awk -v wanted="${key}" '
+        /^fps:[[:space:]]*$/ { in_fps = 1; next }
+        in_fps && /^[[:space:]]+[A-Za-z_]+:[[:space:]]*/ {
+            line = $0
+            sub(/^[[:space:]]+/, "", line)
+            name = line
+            sub(/:.*/, "", name)
+            if (name == wanted) {
+                sub(/^[^:]+:[[:space:]]*/, "", line)
+                sub(/[[:space:]]+#.*$/, "", line)
+                print line
+                exit
+            }
+            next
+        }
+        in_fps && /^[^[:space:]#]/ { exit }
+    ' "${config}"
+}
+
+active_fps=$(read_fps active)
+inactive_fps=$(read_fps inactive)
+case "${active_fps}:${inactive_fps}" in
+    *[!0-9:]*|:*|*:) exit 1 ;;
+esac
+[ "${inactive_fps}" -gt 0 ] || exit 1
+
+bindings_are_active=false
+fps_state="${XDG_RUNTIME_DIR:-/tmp}/eve-sway-tools-fps-state"
+
+binding_scope() {
+    case "${1}" in
+        button*) printf '%s' '--whole-window ' ;;
+    esac
+}
+
+group_next_scope=$(binding_scope "${group_next_binding}")
+group_previous_scope=$(binding_scope "${group_previous_binding}")
+
+ensure_eve_workspace() {
+    eve_moved=false
+    misplaced_ids=$(
+        /usr/bin/swaymsg -t get_tree -r |
+            /usr/bin/jq -r --arg workspace "${eve_workspace}" '
+                recurse(.nodes[], .floating_nodes[])
+                | select(.type == "workspace") as $workspace_node
+                | (
+                    $workspace_node
+                    | recurse(.nodes[], .floating_nodes[])
+                    | select(
+                        .app_id == "exefile.exe"
+                        and $workspace_node.name != $workspace
+                    )
+                    | .id
+                )
+            '
+    )
+    for con_id in ${misplaced_ids}; do
+        eve_moved=true
+        case "${eve_workspace}" in
+            *[!0-9]*)
+                /usr/bin/swaymsg \
+                    "[con_id=${con_id}] move container to workspace \"${eve_workspace}\"" \
+                    >/dev/null
+                ;;
+            *)
+                /usr/bin/swaymsg \
+                    "[con_id=${con_id}] move container to workspace number ${eve_workspace}" \
+                    >/dev/null
+                ;;
+        esac
+    done
+}
+
+update_fps_state() {
+    active_pid=-1
+    workspace=$(
+        /usr/bin/swaymsg -t get_workspaces -r |
+            /usr/bin/jq -r '.[] | select(.focused) | .name'
+    )
+    if [ "${workspace}" = "${eve_workspace}" ]; then
+        focused_pid=$(
+            /usr/bin/swaymsg -t get_tree -r |
+                /usr/bin/jq -r '
+                    [
+                        recurse(.nodes[], .floating_nodes[])
+                        | select(.app_id == "exefile.exe" and .focused)
+                        | .pid
+                    ]
+                    | first // ""
+                '
+        )
+        if [ -n "${focused_pid}" ]; then
+            active_pid=${focused_pid}
+        fi
+    fi
+
+    state_tmp="${fps_state}.$$"
+    printf '%s %s %s\n' \
+        "${active_pid}" "${inactive_fps}" "${active_fps}" >"${state_tmp}"
+    /usr/bin/mv -f "${state_tmp}" "${fps_state}"
+
+    # Steam's pressure-vessel gives Proton a private mount namespace, so its
+    # /run/user/$UID is different from Sway's. Mirror the state into every
+    # running EVE client's namespace; they all share the same container path.
+    eve_pids=$(
+        /usr/bin/swaymsg -t get_tree -r |
+            /usr/bin/jq -r '
+                recurse(.nodes[], .floating_nodes[])
+                | select(.app_id == "exefile.exe")
+                | .pid
+            '
+    )
+    for eve_pid in ${eve_pids}; do
+        namespaced_state="/proc/${eve_pid}/root${fps_state}"
+        if [ -d "/proc/${eve_pid}/root$(dirname "${fps_state}")" ]; then
+            printf '%s %s %s\n' \
+                "${active_pid}" "${inactive_fps}" "${active_fps}" \
+                >"${namespaced_state}" 2>/dev/null || true
+        fi
+    done
+}
+
+update_bindings() {
+    workspace=$(
+        /usr/bin/swaymsg -t get_workspaces -r |
+            /usr/bin/jq -r '.[] | select(.focused) | .name'
+    )
+
+    if [ "${workspace}" = "${eve_workspace}" ] && [ "${bindings_are_active}" = false ]; then
+        if [ -n "${group_next_binding}" ]; then
+            /usr/bin/swaymsg \
+                "bindsym ${group_next_scope}${group_next_binding} exec --no-startup-id ~/.local/bin/eve-sway-cycle group-next" \
+                >/dev/null
+        fi
+        if [ -n "${group_previous_binding}" ]; then
+            /usr/bin/swaymsg \
+                "bindsym ${group_previous_scope}${group_previous_binding} exec --no-startup-id ~/.local/bin/eve-sway-cycle group-previous" \
+                >/dev/null
+        fi
+        if [ -n "${client_next_binding}" ]; then
+            /usr/bin/swaymsg \
+                "bindsym ${client_next_binding} exec --no-startup-id ~/.local/bin/eve-sway-cycle client-next" \
+                >/dev/null
+        fi
+        if [ -n "${client_previous_binding}" ]; then
+            /usr/bin/swaymsg \
+                "bindsym ${client_previous_binding} exec --no-startup-id ~/.local/bin/eve-sway-cycle client-previous" \
+                >/dev/null
+        fi
+        bindings_are_active=true
+    elif [ "${workspace}" != "${eve_workspace}" ] && [ "${bindings_are_active}" = true ]; then
+        if [ -n "${group_next_binding}" ]; then
+            /usr/bin/swaymsg "unbindsym ${group_next_scope}${group_next_binding}" >/dev/null
+        fi
+        if [ -n "${group_previous_binding}" ]; then
+            /usr/bin/swaymsg "unbindsym ${group_previous_scope}${group_previous_binding}" >/dev/null
+        fi
+        if [ -n "${client_next_binding}" ]; then
+            /usr/bin/swaymsg "unbindsym ${client_next_binding}" >/dev/null
+        fi
+        if [ -n "${client_previous_binding}" ]; then
+            /usr/bin/swaymsg "unbindsym ${client_previous_binding}" >/dev/null
+        fi
+        bindings_are_active=false
+    fi
+}
+
+cleanup() {
+    if [ -n "${subscriber_pid}" ]; then
+        kill "${subscriber_pid}" 2>/dev/null || true
+    fi
+    if [ "${bindings_are_active}" = true ]; then
+        if [ -n "${group_next_binding}" ]; then
+            /usr/bin/swaymsg "unbindsym ${group_next_scope}${group_next_binding}" >/dev/null 2>&1 || true
+        fi
+        if [ -n "${group_previous_binding}" ]; then
+            /usr/bin/swaymsg "unbindsym ${group_previous_scope}${group_previous_binding}" >/dev/null 2>&1 || true
+        fi
+        if [ -n "${client_next_binding}" ]; then
+            /usr/bin/swaymsg "unbindsym ${client_next_binding}" >/dev/null 2>&1 || true
+        fi
+        if [ -n "${client_previous_binding}" ]; then
+            /usr/bin/swaymsg "unbindsym ${client_previous_binding}" >/dev/null 2>&1 || true
+        fi
+    fi
+    /usr/bin/rm -f "${pid_file}" "${event_fifo}"
+}
+trap cleanup EXIT
+trap 'exit 0' INT TERM
+
+ensure_eve_workspace
+"${HOME}/.local/bin/eve-sway-cycle" arrange >/dev/null 2>&1 || true
+update_bindings
+update_fps_state
+/usr/bin/mkfifo "${event_fifo}"
+(
+    exec 9>&-
+    exec /usr/bin/swaymsg -m -t subscribe '["workspace","window"]'
+) >"${event_fifo}" &
+subscriber_pid=$!
+
+while IFS= read -r event; do
+    ensure_eve_workspace
+    event_change=$(printf '%s\n' "${event}" | /usr/bin/jq -r '.change // ""')
+    event_app_id=$(printf '%s\n' "${event}" | /usr/bin/jq -r '.container.app_id // ""')
+    if [ "${eve_moved}" = true ] ||
+        { [ "${event_app_id}" = "exefile.exe" ] &&
+          { [ "${event_change}" = "new" ] ||
+            [ "${event_change}" = "title" ] ||
+            [ "${event_change}" = "move" ]; }; }; then
+        "${HOME}/.local/bin/eve-sway-cycle" arrange >/dev/null 2>&1 || true
+    fi
+    update_bindings
+    update_fps_state
+done <"${event_fifo}"

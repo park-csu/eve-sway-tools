@@ -1,0 +1,25 @@
+# Copy this file to ~/.config/eve-sway-tools/config.yaml.
+# Bindings are active only while the configured workspace is focused.
+# Use Sway bindsym syntax, for example: Mod4+Tab or Ctrl+Shift+space.
+# Choose combinations that are not already bound globally.
+workspace: 10
+
+bindings:
+  group_next: Ctrl+Tab
+  group_previous: Ctrl+Shift+Tab
+  client_next: Tab
+  client_previous: Shift+Tab
+
+# 0 means unlimited. When workspace 10 is not focused, every client uses the
+# inactive limit.
+fps:
+  active: 120
+  inactive: 10
+
+# Groups and their internal client order.
+cycle_groups:
+  main:
+    - Main Character
+  alts:
+    - Alt One
+    - Alt Two
