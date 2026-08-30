@@ -2,11 +2,11 @@
 set -eu
 
 source_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-lib_dir="${HOME}/.local/lib/eve-sway-tools"
+lib_dir="${HOME}/.local/lib/eve-sway-multibox"
 manifest_dir="${HOME}/.local/share/vulkan/implicit_layer.d"
 
 mkdir -p "${lib_dir}" "${manifest_dir}"
-library_tmp=$(mktemp "${lib_dir}/libeve_sway_tools_fps.so.XXXXXX")
+library_tmp=$(mktemp "${lib_dir}/libeve_sway_multibox_fps.so.XXXXXX")
 trap 'rm -f "${library_tmp}"' EXIT
 cc -O2 -fPIC -fvisibility=hidden -shared \
     -Wl,-z,defs \
@@ -14,24 +14,24 @@ cc -O2 -fPIC -fvisibility=hidden -shared \
     "${source_dir}/src/eve-sway-fps-limit.c" \
     -pthread
 chmod 0755 "${library_tmp}"
-mv -f "${library_tmp}" "${lib_dir}/libeve_sway_tools_fps.so"
+mv -f "${library_tmp}" "${lib_dir}/libeve_sway_multibox_fps.so"
 trap - EXIT
 
-cat >"${manifest_dir}/VK_LAYER_EVE_sway_tools.json" <<EOF
+cat >"${manifest_dir}/VK_LAYER_EVE_sway_multibox.json" <<EOF
 {
   "file_format_version": "1.2.0",
   "layer": {
-    "name": "VK_LAYER_EVE_sway_tools",
+    "name": "VK_LAYER_EVE_sway_multibox",
     "type": "GLOBAL",
-    "library_path": "${lib_dir}/libeve_sway_tools_fps.so",
+    "library_path": "${lib_dir}/libeve_sway_multibox_fps.so",
     "api_version": "1.4.0",
     "implementation_version": "1",
-    "description": "eve-sway-tools focus-aware FPS limiter",
+    "description": "eve-sway-multibox focus-aware FPS limiter",
     "enable_environment": {
-      "EVE_SWAY_TOOLS_ENABLE_FPS": "1"
+      "EVE_SWAY_MULTIBOX_ENABLE_FPS": "1"
     },
     "disable_environment": {
-      "EVE_SWAY_TOOLS_DISABLE_FPS": "1"
+      "EVE_SWAY_MULTIBOX_DISABLE_FPS": "1"
     }
   }
 }

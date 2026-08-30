@@ -1,4 +1,4 @@
-# eve-sway-tools
+# eve-sway-multibox
 
 Sway workspace management and a focus-aware Vulkan FPS limiter for
 multi-client EVE Online on native Wayland.
@@ -34,8 +34,8 @@ sudo dnf install gcc vulkan-loader-devel vulkan-headers
 ## Install
 
 ```sh
-git clone https://github.com/park-csu/eve-sway-tools.git
-cd eve-sway-tools
+git clone https://github.com/park-csu/eve-sway-multibox.git
+cd eve-sway-multibox
 ./install.sh
 ```
 
@@ -50,7 +50,7 @@ For GE-Proton, enable the implicit Vulkan layer through `user_settings.py`:
 
 ```python
 if os.environ.get("SteamAppId") == "8500":
-    user_settings["EVE_SWAY_TOOLS_ENABLE_FPS"] = "1"
+    user_settings["EVE_SWAY_MULTIBOX_ENABLE_FPS"] = "1"
 ```
 
 Restart the EVE launcher and clients after enabling the layer.
@@ -60,7 +60,7 @@ Restart the EVE launcher and clients after enabling the layer.
 Copy `config.example.yaml` to:
 
 ```text
-~/.config/eve-sway-tools/config.yaml
+~/.config/eve-sway-multibox/config.yaml
 ```
 
 Example:
@@ -123,7 +123,7 @@ eve-sway-cycle group-previous
 
 ## How the limiter works
 
-`VK_LAYER_EVE_sway_tools` intercepts `vkQueuePresentKHR`. The manager mirrors
+`VK_LAYER_EVE_sway_multibox` intercepts `vkQueuePresentKHR`. The manager mirrors
 the focused EVE PID and configured limits into Proton's mount namespace.
 The active client uses `fps.active`; all other clients use `fps.inactive`.
 When the configured workspace is not focused, every client uses the inactive

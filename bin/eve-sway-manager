@@ -1,9 +1,9 @@
 #!/bin/sh
 set -eu
 
-lock_file="${XDG_RUNTIME_DIR:-/tmp}/eve-sway-tools-manager.lock"
-pid_file="${XDG_RUNTIME_DIR:-/tmp}/eve-sway-tools-manager.pid"
-event_fifo="${XDG_RUNTIME_DIR:-/tmp}/eve-sway-tools-manager.$$.fifo"
+lock_file="${XDG_RUNTIME_DIR:-/tmp}/eve-sway-multibox-manager.lock"
+pid_file="${XDG_RUNTIME_DIR:-/tmp}/eve-sway-multibox-manager.pid"
+event_fifo="${XDG_RUNTIME_DIR:-/tmp}/eve-sway-multibox-manager.$$.fifo"
 subscriber_pid=""
 exec 9>"${lock_file}"
 if ! /usr/bin/flock -n 9; then
@@ -16,7 +16,7 @@ if ! /usr/bin/flock -n 9; then
 fi
 printf '%s\n' "$$" >"${pid_file}"
 
-config="${EVE_SWAY_TOOLS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/eve-sway-tools/config.yaml}"
+config="${EVE_SWAY_MULTIBOX_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/eve-sway-multibox/config.yaml}"
 [ -r "${config}" ] || exit 1
 "${HOME}/.local/bin/eve-sway-cycle" validate >/dev/null || exit 1
 
@@ -104,7 +104,7 @@ esac
 [ "${inactive_fps}" -gt 0 ] || exit 1
 
 bindings_are_active=false
-fps_state="${XDG_RUNTIME_DIR:-/tmp}/eve-sway-tools-fps-state"
+fps_state="${XDG_RUNTIME_DIR:-/tmp}/eve-sway-multibox-fps-state"
 
 binding_scope() {
     case "${1}" in

@@ -11,7 +11,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define EVE_LAYER_NAME "VK_LAYER_EVE_sway_tools"
+#define EVE_LAYER_NAME "VK_LAYER_EVE_sway_multibox"
 #define STATE_REFRESH_NS 50000000LL
 
 static PFN_vkGetInstanceProcAddr next_gipa;
@@ -76,7 +76,7 @@ static void refresh_state(int64_t now) {
     }
 
     char path[512];
-        if (snprintf(path, sizeof(path), "%s/eve-sway-tools-fps-state", runtime) <= 0) {
+        if (snprintf(path, sizeof(path), "%s/eve-sway-multibox-fps-state", runtime) <= 0) {
         return;
     }
 

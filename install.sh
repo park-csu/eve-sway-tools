@@ -3,7 +3,7 @@ set -eu
 
 source_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 bin_dir="${HOME}/.local/bin"
-config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/eve-sway-tools"
+config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/eve-sway-multibox"
 
 mkdir -p "${bin_dir}" "${config_dir}"
 install -m 0755 "${source_dir}/bin/eve-sway-cycle" "${bin_dir}/eve-sway-cycle"
@@ -16,6 +16,6 @@ fi
 "${source_dir}/install-vulkan-layer.sh"
 
 printf '%s\n' \
-    "Installed eve-sway-tools." \
+    "Installed eve-sway-multibox." \
     "Enable the Vulkan limiter for EVE's Proton environment with:" \
-    "  EVE_SWAY_TOOLS_ENABLE_FPS=1"
+    "  EVE_SWAY_MULTIBOX_ENABLE_FPS=1"

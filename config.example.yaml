@@ -1,4 +1,4 @@
-# Copy this file to ~/.config/eve-sway-tools/config.yaml.
+# Copy this file to ~/.config/eve-sway-multibox/config.yaml.
 # Bindings are active only while the configured workspace is focused.
 # Use Sway bindsym syntax, for example: Mod4+Tab or Ctrl+Shift+space.
 # Choose combinations that are not already bound globally.
