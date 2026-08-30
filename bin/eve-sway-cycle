@@ -42,10 +42,12 @@ def read_config() -> tuple[dict, list[str]]:
         "workspace": None,
         "bindings": {},
         "fps": {},
+        "client_groups": {},
         "cycle_groups": {},
     }
     errors: list[str] = []
     groups: dict[str, list[str]] = {}
+    client_groups: dict[str, list[str]] = {}
     section: str | None = None
     current: str | None = None
 
@@ -72,7 +74,10 @@ def read_config() -> tuple[dict, list[str]]:
                     errors.append(f"line {line_number}: duplicate workspace")
                 config["workspace"] = value.strip("\"'")
                 section = None
-            elif key in {"bindings", "fps", "cycle_groups"} and not value:
+            elif (
+                key in {"bindings", "fps", "client_groups", "cycle_groups"}
+                and not value
+            ):
                 section = key
             else:
                 errors.append(f"line {line_number}: unknown key or invalid value: {key}")
@@ -88,29 +93,40 @@ def read_config() -> tuple[dict, list[str]]:
             target[key] = value.strip("\"'")
             continue
 
-        if section == "cycle_groups" and indent == 2 and stripped.endswith(":"):
+        if (
+            section in {"client_groups", "cycle_groups"}
+            and indent == 2
+            and stripped.endswith(":")
+        ):
             current = stripped[:-1].strip()
+            target_groups = client_groups if section == "client_groups" else groups
             if not current:
                 errors.append(f"line {line_number}: empty group name")
-            elif current in groups:
-                errors.append(f"line {line_number}: duplicate group: {current}")
+            elif current in target_groups:
+                errors.append(f"line {line_number}: duplicate {section} group: {current}")
             else:
-                groups[current] = []
+                target_groups[current] = []
             continue
 
-        if section == "cycle_groups" and indent == 4 and stripped.startswith("- "):
-            character = stripped[2:].strip().strip("\"'")
+        if (
+            section in {"client_groups", "cycle_groups"}
+            and indent == 4
+            and stripped.startswith("- ")
+        ):
+            member = stripped[2:].strip().strip("\"'")
+            target_groups = client_groups if section == "client_groups" else groups
             if current is None:
-                errors.append(f"line {line_number}: client has no group")
-            if character:
+                errors.append(f"line {line_number}: member has no group")
+            if member:
                 if current is not None:
-                    groups[current].append(character)
+                    target_groups[current].append(member)
             else:
-                errors.append(f"line {line_number}: empty client name")
+                errors.append(f"line {line_number}: empty member name")
             continue
 
         errors.append(f"line {line_number}: invalid indentation or structure")
 
+    config["client_groups"] = client_groups
     config["cycle_groups"] = groups
 
     workspace = config["workspace"]
@@ -149,6 +165,33 @@ def read_config() -> tuple[dict, list[str]]:
     for name, members in groups.items():
         if not members:
             errors.append(f"group {name!r} is empty")
+    characters: dict[str, str] = {}
+    for name, members in client_groups.items():
+        if not members:
+            errors.append(f"client group {name!r} is empty")
+        if len(members) > 3:
+            errors.append(f"client group {name!r} has more than 3 characters")
+        if len(members) != len(set(members)):
+            errors.append(f"client group {name!r} contains duplicate characters")
+        for character in members:
+            if character in characters:
+                errors.append(
+                    f"character {character!r} belongs to both "
+                    f"{characters[character]!r} and {name!r}"
+                )
+            characters[character] = name
+    if client_groups:
+        unknown_clients = {
+            member
+            for members in groups.values()
+            for member in members
+            if member not in client_groups
+        }
+        if unknown_clients:
+            errors.append(
+                "unknown client groups in cycle_groups: "
+                + ", ".join(sorted(unknown_clients))
+            )
     return config, errors
 
 
@@ -193,7 +236,9 @@ def main() -> int:
         return 2
     groups = config["cycle_groups"]
     if sys.argv[1] == "validate":
-        client_count = sum(len(members) for members in groups.values())
+        client_count = len(config["client_groups"]) or len(
+            {member for members in groups.values() for member in members}
+        )
         print(
             f"OK: workspace={config['workspace']}, "
             f"groups={len(groups)}, clients={client_count}, "
@@ -206,16 +251,24 @@ def main() -> int:
             ["/usr/bin/swaymsg", "-t", "get_tree", "-r"], text=True
         )
     )
+    character_to_client = {
+        character: client
+        for client, characters in config["client_groups"].items()
+        for character in characters
+    }
     clients: dict[str, dict] = {}
-    focused_character: str | None = None
+    focused_client: str | None = None
     for node in walk(tree):
         title = node.get("name") or ""
         if node.get("app_id") != "exefile.exe" or not title.startswith("EVE - "):
             continue
         character = title.removeprefix("EVE - ")
-        clients[character] = node
+        # With no client_groups section, retain the old character-based
+        # configuration format.
+        client = character_to_client.get(character, character)
+        clients[client] = node
         if node.get("focused"):
-            focused_character = character
+            focused_client = client
 
     if not clients:
         return 1
@@ -233,9 +286,9 @@ def main() -> int:
             )
             configured_ids = []
             for members in groups.values():
-                for character in members:
-                    if character in clients:
-                        con_id = clients[character]["id"]
+                for client in members:
+                    if client in clients:
+                        con_id = clients[client]["id"]
                         if con_id not in configured_ids:
                             configured_ids.append(con_id)
 
@@ -320,11 +373,11 @@ def main() -> int:
     group_names = list(groups)
     current_group: str | None = None
     cache = load_cache()
-    if focused_character:
+    if focused_client:
         remembered_group = cache.get("__current_group")
         if (
             remembered_group in groups
-            and focused_character in groups[remembered_group]
+            and focused_client in groups[remembered_group]
         ):
             current_group = remembered_group
         else:
@@ -332,17 +385,17 @@ def main() -> int:
                 (
                     name
                     for name, members in groups.items()
-                    if focused_character in members
+                    if focused_client in members
                 ),
                 None,
             )
 
-    if current_group and focused_character:
-        cache[current_group] = focused_character
+    if current_group and focused_client:
+        cache[current_group] = focused_client
 
     switch_group, step = OPERATIONS[sys.argv[1]]
     target_group: str | None = None
-    target_character: str | None = None
+    target_client: str | None = None
 
     if not switch_group:
         if current_group is None:
@@ -350,11 +403,11 @@ def main() -> int:
         running = [name for name in groups[current_group] if name in clients]
         if not running:
             return 1
-        if focused_character in running:
-            index = running.index(focused_character)
-            target_character = running[(index + step) % len(running)]
+        if focused_client in running:
+            index = running.index(focused_client)
+            target_client = running[(index + step) % len(running)]
         else:
-            target_character = running[0 if step > 0 else -1]
+            target_client = running[0 if step > 0 else -1]
         target_group = current_group
     else:
         if current_group in group_names:
@@ -372,16 +425,16 @@ def main() -> int:
             if not running:
                 continue
             remembered = cache.get(candidate_group)
-            target_character = (
+            target_client = (
                 remembered if remembered in running else running[0 if step > 0 else -1]
             )
             target_group = candidate_group
             break
 
-    if target_group is None or target_character is None:
+    if target_group is None or target_client is None:
         return 1
 
-    con_id = clients[target_character].get("id")
+    con_id = clients[target_client].get("id")
     if not con_id:
         return 1
     result = subprocess.run(
@@ -392,7 +445,7 @@ def main() -> int:
     if result.returncode != 0:
         return result.returncode
 
-    cache[target_group] = target_character
+    cache[target_group] = target_client
     cache["__current_group"] = target_group
     save_cache(cache)
     return 0

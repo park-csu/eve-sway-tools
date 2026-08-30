@@ -16,10 +16,19 @@ fps:
   active: 120
   inactive: 10
 
-# Groups and their internal client order.
-cycle_groups:
-  main:
+# A launcher client/account may have up to three characters. The current
+# window title is used to associate the window with its stable client group.
+client_groups:
+  main_client:
     - Main Character
-  alts:
+    - Main Character Alt
+  alt_client:
     - Alt One
     - Alt Two
+
+# Groups and their internal client order. Entries refer to client_groups.
+cycle_groups:
+  main:
+    - main_client
+  alts:
+    - alt_client
