@@ -1,5 +1,6 @@
 # Copy this file to ~/.config/eve-sway-multibox/config.yaml.
-# Bindings are active only while the configured workspace is focused.
+# The workspace must be a positive Sway workspace number. Bindings are active
+# only while that workspace number is focused, regardless of its display name.
 # Use Sway bindsym syntax, for example: Mod4+Tab or Ctrl+Shift+space.
 # Choose combinations that are not already bound globally.
 workspace: 10

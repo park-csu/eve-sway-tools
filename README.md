@@ -5,7 +5,7 @@ multi-client EVE Online on native Wayland.
 
 ## Features
 
-- Moves EVE clients to a configurable Sway workspace.
+- Moves EVE clients to a configurable Sway workspace number.
 - Keeps all clients in one flat tabbed container and restores configured order.
 - Identifies each launcher client by any of its (up to three) characters.
 - Cycles clients within groups and switches between groups.
@@ -94,6 +94,8 @@ cycle_groups:
 ```
 
 Bindings are optional. Values use Sway `bindsym` syntax.
+`workspace` must be a positive Sway workspace number; display names and icons
+do not affect matching.
 `client_groups` gives each EVE launcher client a stable name, so switching
 characters (and therefore changing the window title) does not change its
 cycle group or tab order. A client group accepts one to three unique character

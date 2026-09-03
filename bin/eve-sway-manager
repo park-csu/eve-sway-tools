@@ -33,7 +33,7 @@ eve_workspace=$(
 )
 [ -n "${eve_workspace}" ] || exit 1
 case "${eve_workspace}" in
-    *[!A-Za-z0-9_.:-]*) exit 1 ;;
+    0|*[!0-9]*) exit 1 ;;
 esac
 
 read_binding() {
@@ -119,7 +119,8 @@ ensure_eve_workspace() {
     eve_moved=false
     misplaced_ids=$(
         /usr/bin/swaymsg -t get_tree -r |
-            /usr/bin/jq -r --arg workspace "${eve_workspace}" '
+            /usr/bin/jq -r \
+                --argjson workspace "${eve_workspace}" '
                 recurse(.nodes[], .floating_nodes[])
                 | select(.type == "workspace") as $workspace_node
                 | (
@@ -127,7 +128,7 @@ ensure_eve_workspace() {
                     | recurse(.nodes[], .floating_nodes[])
                     | select(
                         .app_id == "exefile.exe"
-                        and $workspace_node.name != $workspace
+                        and $workspace_node.num != $workspace
                     )
                     | .id
                 )
@@ -135,27 +136,24 @@ ensure_eve_workspace() {
     )
     for con_id in ${misplaced_ids}; do
         eve_moved=true
-        case "${eve_workspace}" in
-            *[!0-9]*)
-                /usr/bin/swaymsg \
-                    "[con_id=${con_id}] move container to workspace \"${eve_workspace}\"" \
-                    >/dev/null
-                ;;
-            *)
-                /usr/bin/swaymsg \
-                    "[con_id=${con_id}] move container to workspace number ${eve_workspace}" \
-                    >/dev/null
-                ;;
-        esac
+        /usr/bin/swaymsg \
+            "[con_id=${con_id}] move container to workspace number ${eve_workspace}" \
+            >/dev/null
     done
+}
+
+focused_workspace() {
+    /usr/bin/swaymsg -t get_workspaces -r |
+        /usr/bin/jq -r '
+            .[]
+            | select(.focused)
+            | .num
+        '
 }
 
 update_fps_state() {
     active_pid=-1
-    workspace=$(
-        /usr/bin/swaymsg -t get_workspaces -r |
-            /usr/bin/jq -r '.[] | select(.focused) | .name'
-    )
+    workspace=$(focused_workspace)
     if [ "${workspace}" = "${eve_workspace}" ]; then
         focused_pid=$(
             /usr/bin/swaymsg -t get_tree -r |
@@ -200,10 +198,7 @@ update_fps_state() {
 }
 
 update_bindings() {
-    workspace=$(
-        /usr/bin/swaymsg -t get_workspaces -r |
-            /usr/bin/jq -r '.[] | select(.focused) | .name'
-    )
+    workspace=$(focused_workspace)
 
     if [ "${workspace}" = "${eve_workspace}" ] && [ "${bindings_are_active}" = false ]; then
         if [ -n "${group_next_binding}" ]; then
